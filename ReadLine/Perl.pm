@@ -1,37 +1,71 @@
 package Term::ReadLine::Perl;
+
+=head1 NAME
+
+Term::ReadLine::Perl - A pure Perl implementation GNU Readline
+
+=head1 SYNOPSIS
+
+  use Term::ReadLine::Perl;
+  $term = new Term::ReadLine::Perl 'ProgramName';
+  while ( defined ($_ = $term->readline('prompt>')) ) {
+    ...
+  }
+
+=head1 DESCRIPTION
+
+=head2 Overview
+
+This is a implementation of the GNU Readline/History Library written
+entirely in Perl. 
+
+GNU Readline reads lines from an interactive terminal with emacs or vi
+editing capabilities. It provides as mechanism for saving history of
+previous input. 
+
+This package typically used in command-line interfaces and REPLs (Read,
+Eval, Print Loops).
+
+=cut
+
+
 use Carp;
 @ISA = qw(Term::ReadLine::Stub Term::ReadLine::Compa Term::ReadLine::Perl::AU);
 #require 'readline.pl';
 
-$VERSION = $VERSION = 1.0303;
+$VERSION = 1.04;
 
 sub readline {
   shift; 
-  #my $in = 
   &readline::readline(@_);
-  #$loaded = defined &Term::ReadKey::ReadKey;
-  #print STDOUT "\nrl=`$in', loaded = `$loaded'\n";
-  #if (ref \$in eq 'GLOB') {	# Bug under debugger
-  #  ($in = "$in") =~ s/^\*(\w+::)+//;
-  #}
-  #print STDOUT "rl=`$in'\n";
-  #$in;
 }
 
-#sub addhistory {}
-*addhistory = \&AddHistory;
+# add_history is what GNU ReadLine defines. AddHistory is what we have
+# below.
+*add_history = \&AddHistory;
 
-#$term;
-$readline::minlength = 1;	# To peacify -w
-$readline::rl_readline_name = undef; # To peacify -w
-$readline::rl_basic_word_break_characters = undef; # To peacify -w
+# Not sure if addhistory() is needed. It is possible it was misspelling
+# of add_history. 
+*addhistory = \&AddHistory; 
+
+# for backward compatibility: StifleHistory is the old name.
+*StifleHistory = \&stifle_history;
+
+# Initializations of variables to pacify -w
+$readline::minlength = 1;	
+$readline::rl_readline_name = undef;
+$readline::rl_basic_word_break_characters = undef;
+$readline::history_stifled = 0;
+$readline::rl_history_length = 0;
+$readline::rl_max_input_history = 0;
+
 
 sub new {
   if (defined $term) {
     warn "Cannot create second readline interface, falling back to dumb.\n";
     return Term::ReadLine::Stub::new(@_);
   }
-  shift;			# Package
+  shift; # Package
   if (@_) {
     if ($term) {
       warn "Ignoring name of second readline interface.\n" if defined $term;
@@ -69,6 +103,7 @@ sub new {
     local $SIG{__WARN__} = sub {}; # With older Perls
     $term->ornaments(1);
   }
+  $readline::rl_history_length = $readline::rl_max_input_history = 0;
   return $term;
 }
 sub newTTY {
@@ -80,29 +115,149 @@ sub newTTY {
   select($sel);
 }
 sub ReadLine {'Term::ReadLine::Perl'}
+
 sub MinLine {
   my $old = $readline::minlength;
   $readline::minlength = $_[1] if @_ == 2;
   return $old;
 }
+
 sub SetHistory {
   shift;
   @readline::rl_History = @_;
   $readline::rl_HistoryIndex = @readline::rl_History;
+  $readline::rl_history_length = $readline::rl_max_input_history = 
+      @readline::rl_History;
 }
 sub GetHistory {
   @readline::rl_History;
 }
+
+# Place @_ at the end of the history list.
 sub AddHistory {
   shift;
+  if ($readline::history_stifled && 
+      ($readline::rl_history_length == $readline::rl_max_input_history)) {
+    # If the history is stifled, and history_length is zero,
+    # and it equals max_input_history, we don't save items.
+    return if $readline::rl_max_input_history == 0;
+    shift @readline::rl_History;
+  }
+
   push @readline::rl_History, @_;
   $readline::rl_HistoryIndex = @readline::rl_History + @_;
+  $readline::rl_history_length = scalar @readline::rl_History;
 }
-%features =  (appname => 1, minline => 1, autohistory => 1, getHistory => 1,
-	      setHistory => 1, addHistory => 1, preput => 1, 
-	      attribs => 1, 'newTTY' => 1,
+
+sub clear_history {
+  shift;
+  @readline::rl_History = ();
+  $readline::rl_HistoryIndex = $readline::rl_history_length = 0;
+}
+
+sub history_list 
+{
+  @readline::rl_History[1..$#readline::rl_History]
+}
+
+# Remove history element WHICH from the history.  The removed
+# element is returned. 
+sub remove_history {
+  shift;
+  my $which = $_[0];
+  return undef if 
+      $which < 0 || $which >= $readline::rl_history_length || 
+      $attribs{history_length} ==  0;
+  my $removed = splice @readline::rl_History, $which, 1;
+  $readline::rl_history_length--;
+  $readline::rl_HistoryIndex = $readline::rl_history_length if 
+      $readline::rl_history_length < $readline::rl_HistoryIndex;
+  return $removed;
+}
+
+# Make the history entry at WHICH have DATA.  This returns the old
+# entry.  In the case of an invalid WHICH, UNDEF is returned.
+sub replace_history_entry {
+  shift;
+  my ($which, $data) = @_;
+  return undef if $which < 0 || $which >= $readline::rl_history_length;
+  my $replaced = splice @readline::rl_History, $which, 1, $data;
+  return $replaced;
+}
+
+# Stifle the history list, remembering only MAX number of lines.
+sub stifle_history {
+  shift;
+  my $max = shift;
+  $max = 0 if !defined($max) || $max < 0;
+
+  if (scalar @readline::rl_History > $max) {
+      splice @readline::rl_History, $max;
+      $attribs{history_length} = scalar @readline::rl_History;
+  }
+
+  $readline::history_stifled = 1;
+  $readline::rl_max_input_history = $max;
+}
+
+# Stop stifling the history.  This returns the previous maximum
+# number of history entries.  The value is positive if the history
+# was stifled,  negative if it wasn't.
+sub unstifle_history {
+  if ($readline::history_stifled) {
+    $readline::history_stifled = 0;
+    return (scalar @readline::rl_History);
+  } else {
+    return - scalar @readline::rl_History;
+  }
+}
+
+sub history_is_stifled {
+  shift;
+  $readline::history_stifled ? 1 : 0;
+}
+
+# read_history() and write_history() follow GNU Readline's 
+# C convention of returning 0 for success and 1 for failure.
+#
+# ReadHistory and WriteHstory follow Perl's convention of returning 1
+# for success and 0 for failure.
+# It is a little bit whacky, but this is in fact how Term::ReadLine::Gnu
+# works.
+
+sub read_history {
+  my $self = shift;
+  my $filename = shift;
+  open(HISTORY, '<', $filename ) or return 1;
+  while (<HISTORY>) { chomp; push @history, $_} ;
+  SetHistory($self, @history);
+  close HISTORY;
+  return 0;
+}
+
+sub write_history {
+  shift;
+  my $filename = shift;
+  open(HISTORY, '>', $filename ) or return 1;
+  for (@readline::rl_History) { print HISTORY $_, "\n"; }
+  close HISTORY;
+  return 0;
+}
+
+sub ReadHistory {
+    ! read_history(@_);
+}
+
+sub WriteHistory {
+    ! write_history(@_);
+}
+%features =  (appname => 1, minline => 1, autohistory => 1, 
+	      getHistory => 1, setHistory => 1, addHistory => 1, 
+	      readHistory => 1, writeHistory => 1,
+	      preput => 1, attribs => 1, newTTY => 1,
 	      tkRunning => Term::ReadLine::Stub->Features->{'tkRunning'},
 	      ornaments => Term::ReadLine::Stub->Features->{'ornaments'},
+	      stiflehistory => 1,
 	     );
 sub Features { \%features; }
 # my %attribs;
@@ -151,3 +306,25 @@ sub get_line {
 }
 
 1;
+
+__END__
+
+=head1 AUTHORS
+
+Jeffrey Friedl and Ilya Zakharevich
+
+=head1 SEE ALSO
+
+=over 4
+
+=item GNU Readline Library Manual
+
+=item GNU History Library Manual
+
+=item C<Term::ReadLine>
+
+=item C<Term::ReadLine::Perl> (Term-ReadLine-Perl-xx.tar.gz)
+
+=back
+
+=cut
